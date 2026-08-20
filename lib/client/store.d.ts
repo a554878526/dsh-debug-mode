@@ -7,7 +7,7 @@ import { type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client';
 export interface DebugModeState {
     /** Whether Debug Mode is active for the current session. */
     enabled: boolean;
-    /** Durable setup-state event seq from the latest local `/debug` activation. */
+    /** Session-log baseline from the latest local `/debug` activation. */
     activationSeq: number | null;
     /** Waiting assistant-message seq consumed by the latest Continue click. */
     consumedWaitingSeq: number | null;

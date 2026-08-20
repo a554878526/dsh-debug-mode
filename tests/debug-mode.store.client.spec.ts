@@ -45,7 +45,7 @@ describe('createDebugModeStore', () => {
     expect(seen).toEqual([true])
   })
 
-  it('activation opens the dock and records its durable state seq', () => {
+  it('activation opens the dock and records its session-log baseline', () => {
     const store = createDebugModeStore().create()
     store.actions.activate(42)
     expect(store.getSnapshot()).toEqual({ enabled: true, activationSeq: 42, consumedWaitingSeq: null })

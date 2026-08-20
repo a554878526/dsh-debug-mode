@@ -18,6 +18,15 @@ dsh plugin --profile web add "github:a554878526/dsh-debug-mode#main"
 dsh plugin --profile web remove dsh-debug-mode
 ```
 
+### 恢复 0.1.1 及更早版本写入的历史
+
+0.1.1 及更早版本写入了必需的 `debug-mode/state` 事件，正式 DSH 在重新打开历史时不认识该事件。先停止 `dsh web`，再运行仓库中的修复 helper。未传 `--apply` 时只读检查；apply 模式会先备份每个需要修改的压缩日志，再原子替换原文件。
+
+```sh
+python3 scripts/repair_debug_mode_sessions.py
+python3 scripts/repair_debug_mode_sessions.py --apply
+```
+
 ## 后续 agent 能否使用内置脚本？
 
 可以。插件会把四个 Python helper 全部发布到 `scripts/`。Host 加载 `lib/index.js` 时，通过 `import.meta.url` 找到当前已安装插件的 `scripts/` 绝对目录，并把它注册为 `debug-mode` skill 的 directory `resourceBase`。DSH 随后会给 agent 渲染绝对的 `<skill_resources>` 目录，skill 再要求 agent 从该目录执行 helper。因此通过 Git 依赖、打包产物或本地 checkout 安装时都不依赖开发机源码路径。
@@ -37,9 +46,9 @@ pnpm run check
 dsh plugin --profile web add .
 ```
 
-运行时优先的 Debug Mode，一个双面（host + client）包。宿主半面注册 `debug-mode` skill、`/debug` 与持久阶段约束；浏览器半面通过输入区始终可用的「命令」菜单提供该命令，并在启用后通过 `conversation.input.dock` 渲染循环控制条。
+运行时优先的 Debug Mode，一个双面（host + client）包。宿主半面注册 `debug-mode` skill、`/debug` 与进程内阶段约束；浏览器半面通过输入区始终可用的「命令」菜单提供该命令，并在启用后通过 `conversation.input.dock` 渲染循环控制条。
 
-执行 `/debug` 会追加 `debug-mode/state { phase: "setup" }`、立即打开控制条，并把 canonical `debug-mode` skill 正文排入下一条真实用户消息；它自身不会唤醒模型。模型无需自行选择 skill 工具就能收到快速启动契约。控制条提交 `继续分析`、`已修复，请清理调试日志和插桩代码` 或 `退出 Debug Mode`。已修复会在清理回合前关闭宿主约束；退出则关闭约束且不发起模型请求。
+执行 `/debug` 会启用进程内 setup 状态、立即打开控制条，并把 canonical `debug-mode` skill 正文排入下一条真实用户消息；它自身不会唤醒模型。模型无需自行选择 skill 工具就能收到快速启动契约。控制条提交 `继续分析`、`已修复，请清理调试日志和插桩代码` 或 `退出 Debug Mode`。已修复会在清理回合前关闭宿主约束；退出则关闭约束且不发起模型请求。插件不再写入自定义 session event，因此独立安装不会导致 DSH 历史无法读取。
 
 `scripts/` 下随包提供四个受支持的辅助脚本（`new_debug_session.py`、`debug_ingest_server.py`、`summarize_debug_log.py`、`find_instrumentation.py`）。运行时 skill 从 `import.meta.url` 解析当前已安装插件的脚本目录，并把它发布为 directory `resourceBase`，因此源码 checkout、打包发布、pnpm Git 依赖与独立插件仓库都使用相同的相对名称，不依赖机器固定路径。skill 要求优先使用这些脚本，只有脚本缺失或执行失败时才允许使用内联回退。
 
@@ -71,7 +80,7 @@ setup 与 analyzing 响应经过宿主强制执行的 `llm/stream` 过滤器。�
 
 ## 已知限制与后续工作
 
-- **dock 标志仍是瞬时客户端状态** —— 宿主阶段通过 `debug-mode/state` 在刷新后保留，但控制条尚不会从该事件恢复；再次执行 `/debug` 可恢复控制条并重新开始 setup。
+- **Debug Mode 状态只存在于当前进程** —— 重启 Host、刷新页面或重新打开 session 都会结束当前循环；再次执行 `/debug` 可恢复控制条并重新开始 setup。这样可以避免写入当前 DSH 持久化 API 无法标记为 ignorable 的外部事件类型。
 - **退出不会撤回已排队上下文** —— 如果用户在发送下一条真实消息前退出，即使宿主约束已关闭，已排队的激活上下文仍会进入下一次请求。
 - **setup 输出有意延迟** —— 每次模型响应完成后才显示工具活动，从而阻止被丢弃的诊断文本流入 UI。
 - **清理发生在下一轮模型回合** —— `已修复` 提交一条消息而不是自己删除文件；由 skill 指引模型移除探针并删除 `.codex-debug/` 日志。因此机械化清理由模型完成，而非宿主服务。

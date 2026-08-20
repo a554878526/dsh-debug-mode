@@ -8,7 +8,7 @@ import {
   type StreamChunk,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   DEBUG_MODE_CONTINUE_MESSAGE,
@@ -18,8 +18,7 @@ import {
   DEBUG_MODE_HANDOFF_OPEN,
   DEBUG_MODE_WAITING_PREFIX,
 } from './messages.ts'
-import { appendDebugModeState, foldDebugModeState } from './state.ts'
-import type { DebugModeHandoff } from './types.ts'
+import type { DebugModeHandoff, DebugModePhase } from './types.ts'
 
 const PROTOCOL_RESULT = 'Debug Mode blocked a premature conclusion because no reproduction handoff was committed. '
   + 'No diagnosis was published. Continue setup: create the debug session, start its ingest server, install a transport-backed probe, then submit the handoff.'
@@ -45,10 +44,24 @@ interface DebugTransportFacts {
 
 /** Runtime facts observed from successful setup tools for one activation. */
 interface SetupToolState {
-  stateSeq: number
+  generation: number
   transport?: DebugTransportFacts
   ingestStarted: boolean
   insertedProbe: boolean
+}
+
+interface ActiveDebugModeState {
+  phase: Exclude<DebugModePhase, 'inactive'>
+  generation: number
+  usedLogPaths: ReadonlySet<string>
+}
+
+/** Process-local control used by the command and Host enforcement hooks. */
+export interface DebugModeRuntimeController {
+  /** Start a fresh Debug Mode activation for one agent. */
+  activate(agent: Agent): void
+  /** Read the current process-local phase for diagnostics and tests. */
+  phase(sessionId: SessionId): DebugModePhase
 }
 
 const SETUP_WRITE_DENIAL = 'Debug Mode setup permits only transport-backed probe writes. '
@@ -56,19 +69,10 @@ const SETUP_WRITE_DENIAL = 'Debug Mode setup permits only transport-backed probe
 const ACTIVE_CLEANUP_DENIAL = 'Debug Mode retains probes, ingest jobs, and every round log until the user clicks Fixed. '
   + 'Submit a fresh reproduction handoff or a verification report; cleanup is allowed only in the Fixed turn.'
 
-/** The last durable `debug-mode/state` event, or `undefined` when Debug Mode never ran. */
-function lastDebugModeStateEvent(session: Session): SessionEvent<'debug-mode/state'> | undefined {
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const event = session.events[index]
-    if (event?.type === 'debug-mode/state') return event
-  }
-  return undefined
-}
-
-function setupToolState(agent: Agent, stateSeq: number, states: Map<SessionId, SetupToolState>): SetupToolState {
+function setupToolState(agent: Agent, generation: number, states: Map<SessionId, SetupToolState>): SetupToolState {
   const current = states.get(agent.id)
-  if (current === undefined || current.stateSeq !== stateSeq) {
-    const created = { stateSeq, ingestStarted: false, insertedProbe: false }
+  if (current === undefined || current.generation !== generation) {
+    const created = { generation, ingestStarted: false, insertedProbe: false }
     states.set(agent.id, created)
     return created
   }
@@ -185,30 +189,31 @@ function analyzingCleanupDenial(exec: ToolExecution): string | undefined {
 function observeSuccessfulProbeWrite(
   exec: ToolExecution,
   result: Readonly<ToolExecutionResult>,
-  states: Map<SessionId, SetupToolState>,
+  phases: ReadonlyMap<SessionId, ActiveDebugModeState>,
+  setupStates: Map<SessionId, SetupToolState>,
 ): void {
   const agent = exec.agent
   if (agent === undefined || result.isError) return
-  const stateEvent = lastDebugModeStateEvent(agent.session)
-  if (stateEvent?.data.phase !== 'setup' && stateEvent?.data.phase !== 'analyzing') return
-  const state = setupToolState(agent, stateEvent.seq, states)
+  const active = phases.get(agent.id)
+  if (active === undefined || (active.phase !== 'setup' && active.phase !== 'analyzing')) return
+  const state = setupToolState(agent, active.generation, setupStates)
   const command = bashCommand(exec)
   if (command !== undefined) {
     if (command.includes('new_debug_session.py')) {
       const transport = parseTransportFacts(toolResultText(result))
-      if (transport !== undefined) states.set(agent.id, { ...state, transport, ingestStarted: false })
+      if (transport !== undefined) setupStates.set(agent.id, { ...state, transport, ingestStarted: false })
       return
     }
     if (command.includes('debug_ingest_server.py') && state.transport !== undefined
       && command.includes(state.transport.sessionId)) {
-      states.set(agent.id, { ...state, ingestStarted: true })
+      setupStates.set(agent.id, { ...state, ingestStarted: true })
       return
     }
   }
   const content = insertedContent(exec)
   if (content === undefined || state.transport === undefined || !state.ingestStarted
     || !isTransportBackedProbe(content, state.transport)) return
-  states.set(agent.id, { ...state, insertedProbe: true })
+  setupStates.set(agent.id, { ...state, insertedProbe: true })
 }
 
 function parseHandoff(chunks: readonly StreamChunk[]): DebugModeHandoff | undefined {
@@ -283,6 +288,7 @@ async function* enforceSetupResponse(
   options: GenerateOptions,
   next: () => AsyncIterable<StreamChunk>,
   sessions: { get(id: NonNullable<GenerateOptions['sessionId']>): Session | undefined; flush(session: Session): Promise<unknown> },
+  phases: Map<SessionId, ActiveDebugModeState>,
   setupStates: Map<SessionId, SetupToolState>,
 ): AsyncIterable<StreamChunk> {
   if (!isAgentLoopRequest(options) || options.sessionId === undefined) {
@@ -290,8 +296,9 @@ async function* enforceSetupResponse(
     return
   }
   const session = sessions.get(options.sessionId)
-  const phase = session === undefined ? 'inactive' : foldDebugModeState(session.events).phase
-  if (session === undefined || (phase !== 'setup' && phase !== 'analyzing')) {
+  const active = session === undefined ? undefined : phases.get(session.id)
+  const phase = active?.phase ?? 'inactive'
+  if (session === undefined || active === undefined || (phase !== 'setup' && phase !== 'analyzing')) {
     yield* next()
     return
   }
@@ -333,9 +340,8 @@ async function* enforceSetupResponse(
     yield* replacementChunks(LOG_PATH_MISMATCH_RESULT, chunks)
     return
   }
-  const reusedLog = session.events.some(event => event.type === 'debug-mode/state'
-    && event.data.phase === 'waiting-for-repro'
-    && sameDebugLogPath(event.data.handoff.logPath, handoff.logPath))
+  const logIdentity = debugLogIdentity(handoff.logPath)
+  const reusedLog = active.usedLogPaths.has(logIdentity)
   if (reusedLog) {
     yield* replacementChunks('Debug Mode rejected the handoff because this logPath was already used by an earlier reproduction round. Run new_debug_session.py again and install the next probe with its new sessionId, ingestUrl, and logPath.', chunks)
     return
@@ -344,66 +350,93 @@ async function* enforceSetupResponse(
   const rendered = renderHandoff(handoff)
   const renderedChunks = replacementChunks(rendered, chunks)
   yield* renderedChunks.slice(0, -1)
-  appendDebugModeState(session, 'waiting-for-repro', handoff)
-  await sessions.flush(session)
+  phases.set(session.id, {
+    phase: 'waiting-for-repro',
+    generation: active.generation,
+    usedLogPaths: new Set([...active.usedLogPaths, logIdentity]),
+  })
   yield renderedChunks.at(-1) as StreamChunk
 }
 
 /**
- * Register durable phase transitions, waiting policy, and setup-response enforcement.
+ * Register process-local phase transitions, waiting policy, and setup-response enforcement.
  * @param ctx - Host context carrying sessions, tools, and the Agent lifecycle events.
  */
-export function installDebugModeRuntime(ctx: Context): void {
+export function installDebugModeRuntime(ctx: Context): DebugModeRuntimeController {
+  const phases = new Map<SessionId, ActiveDebugModeState>()
   const setupToolStates = new Map<SessionId, SetupToolState>()
 
   ctx.on('agent/pre-step', async ({ agent, messages }, next): Promise<PreStepDecision> => {
-    const state = foldDebugModeState(agent.session.events)
-    if (state.phase === 'inactive') return next()
+    const active = phases.get(agent.id)
+    if (active === undefined) return next()
     const human = directHuman(messages)
     if (human !== undefined && onlyText(human) === DEBUG_MODE_EXIT_MESSAGE) {
-      appendDebugModeState(agent.session, 'inactive')
-      await ctx.sessions.flush(agent.session)
+      phases.delete(agent.id)
+      setupToolStates.delete(agent.id)
       return { kind: 'reject' }
     }
     if (human !== undefined && onlyText(human) === DEBUG_MODE_FIXED_MESSAGE) {
-      appendDebugModeState(agent.session, 'inactive')
-      await ctx.sessions.flush(agent.session)
+      phases.delete(agent.id)
+      setupToolStates.delete(agent.id)
       return next()
     }
-    if (state.phase === 'setup' && human !== undefined && onlyText(human) === DEBUG_MODE_CONTINUE_MESSAGE) {
+    if (active.phase === 'setup' && human !== undefined && onlyText(human) === DEBUG_MODE_CONTINUE_MESSAGE) {
       return { kind: 'reject' }
     }
-    if (state.phase !== 'waiting-for-repro') return next()
+    if (active.phase !== 'waiting-for-repro') return next()
     if (human === undefined) return { kind: 'reject' }
     const decision = await next()
     if (decision.kind === 'reject') return decision
-    appendDebugModeState(agent.session, 'analyzing')
-    await ctx.sessions.flush(agent.session)
+    phases.set(agent.id, {
+      phase: 'analyzing',
+      generation: active.generation + 1,
+      usedLogPaths: active.usedLogPaths,
+    })
     return decision
   })
 
   ctx.tools.guard((exec: ToolExecution) => {
     const agent = exec.agent
     if (agent === undefined) return undefined
-    const stateEvent = lastDebugModeStateEvent(agent.session)
-    if (stateEvent?.data.phase === 'waiting-for-repro') return WAITING_TOOL_DENIAL
-    if (stateEvent?.data.phase !== 'setup') {
-      if (stateEvent?.data.phase !== 'analyzing') {
-        setupToolStates.delete(agent.id)
-        return undefined
-      }
+    const active = phases.get(agent.id)
+    if (active === undefined) {
+      setupToolStates.delete(agent.id)
+      return undefined
+    }
+    if (active.phase === 'waiting-for-repro') return WAITING_TOOL_DENIAL
+    if (active.phase === 'analyzing') {
       const cleanupDenial = analyzingCleanupDenial(exec)
       if (cleanupDenial !== undefined) return cleanupDenial
-      return analyzingWriteDenial(exec, setupToolState(agent, stateEvent.seq, setupToolStates))
+      return analyzingWriteDenial(exec, setupToolState(agent, active.generation, setupToolStates))
     }
-    return setupWriteDenial(exec, setupToolState(agent, stateEvent.seq, setupToolStates))
+    return setupWriteDenial(exec, setupToolState(agent, active.generation, setupToolStates))
   })
 
   ctx.on('tools/post-execute', async (exec, result, next) => {
-    observeSuccessfulProbeWrite(exec, result, setupToolStates)
+    observeSuccessfulProbeWrite(exec, result, phases, setupToolStates)
     return next()
   })
 
+  ctx.on('session/disposed', (session) => {
+    phases.delete(session.id)
+    setupToolStates.delete(session.id)
+  })
+
   ctx.on('llm/stream', (options: GenerateOptions, next) =>
-    enforceSetupResponse(options, next, ctx.sessions, setupToolStates), { global: true })
+    enforceSetupResponse(options, next, ctx.sessions, phases, setupToolStates), { global: true })
+
+  return {
+    activate(agent) {
+      const previous = phases.get(agent.id)
+      phases.set(agent.id, {
+        phase: 'setup',
+        generation: (previous?.generation ?? 0) + 1,
+        usedLogPaths: new Set(),
+      })
+      setupToolStates.delete(agent.id)
+    },
+    phase(sessionId) {
+      return phases.get(sessionId)?.phase ?? 'inactive'
+    },
+  }
 }

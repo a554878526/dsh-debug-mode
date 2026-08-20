@@ -6,7 +6,8 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, markAgentLoopRequest, type GenerateOptions, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
-import { installDebugModeRuntime } from '../src/runtime.ts'
+import { DEBUG_MODE_CONTINUE_MESSAGE } from '../src/messages.ts'
+import { installDebugModeRuntime, type DebugModeRuntimeController } from '../src/runtime.ts'
 import type {} from '../src/types.ts'
 
 /** Branded id for the stable fake agent the harness drives through phases. */
@@ -70,32 +71,28 @@ interface RuntimeWorld {
   session: Session
   agent: Agent
   guard: (exec: ToolExecution) => string | undefined
-  flushes: { count: number }
+  runtime: DebugModeRuntimeController
 }
 
 async function runtimeWorld(phase: 'setup' | 'waiting-for-repro' | 'analyzing' | 'inactive' = 'setup'): Promise<RuntimeWorld> {
   const ctx = new Context()
   const session = Session.create(AGENT_ID)
-  if (phase === 'waiting-for-repro') {
-    session.append('debug-mode/state', { version: 1, phase, handoff: {
-      probeLocations: ['src/value.ts:selectFilter'],
-      reproductionAction: 'Copy once.',
-      logPath: '.codex-debug/debug.jsonl',
-    } })
-  } else {
-    session.append('debug-mode/state', { version: 1, phase })
-  }
   const agent = { id: AGENT_ID, session } as Agent
   let guard: ((exec: ToolExecution) => string | undefined) | undefined
-  const flushes = { count: 0 }
   ctx.provide('tools', { guard: (fn: (exec: ToolExecution) => string | undefined) => { guard = fn } })
   ctx.provide('sessions', {
     get: (id: SessionId) => id === session.id ? session : undefined,
-    flush: () => { flushes.count += 1; return Promise.resolve() },
+    flush: () => Promise.resolve(),
   })
-  installDebugModeRuntime(ctx)
+  const runtime = installDebugModeRuntime(ctx)
   if (guard === undefined) throw new Error('debug-mode runtime registered no tool guard')
-  return { ctx, session, agent, guard, flushes }
+  const world = { ctx, session, agent, guard, runtime }
+  if (phase !== 'inactive') runtime.activate(agent)
+  if (phase === 'waiting-for-repro' || phase === 'analyzing') {
+    await consumeResponse(world, textChunks(HANDOFF), { marked: true })
+  }
+  if (phase === 'analyzing') await enterAnalyzing(world)
+  return world
 }
 
 async function settle(world: RuntimeWorld, exec: ToolExecution, isError: boolean, text = ''): Promise<void> {
@@ -167,6 +164,17 @@ function user(text: string, extra = false): UserMessage {
 /** Complete agent/pre-step payload from the public lifecycle event contract. */
 function preStepPayload(agent: Agent, messages: UserMessage[]) {
   return { agent, messages, turn: 1, step: 1, signal: new AbortController().signal }
+}
+
+async function enterAnalyzing(world: RuntimeWorld): Promise<void> {
+  const accepted: PreStepDecision = { kind: 'enter', messages: [user('accepted')] }
+  const result = await world.ctx.waterfall(
+    world.ctx as never,
+    'agent/pre-step',
+    preStepPayload(world.agent, [user(DEBUG_MODE_CONTINUE_MESSAGE)]),
+    () => Promise.resolve(accepted),
+  )
+  if (result.kind === 'reject') throw new Error('Debug Mode did not enter analyzing')
 }
 
 describe('debug-mode setup runtime', () => {
@@ -305,14 +313,14 @@ describe('debug-mode setup runtime', () => {
     expect(output.some(chunk => chunk.type === 'usage')).toBe(true)
   })
 
-  it('trims a valid handoff, commits waiting state, and flushes once', async () => {
+  it('trims a valid handoff and enters process-local waiting state', async () => {
     const world = await runtimeWorld()
     const handoff = `<debug_reproduction_handoff>{"probeLocations":[" src/a.ts:f "],"reproductionAction":" copy ","logPath":" ${LOG_PATH} "}</debug_reproduction_handoff>`
     const output = await consumeResponse(world, textChunks(handoff), { marked: true })
     expect(output.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'text'
       && chunk.block.text.includes(`Probes: src/a.ts:f\nReproduce: copy\nLog: ${LOG_PATH}`))).toBe(true)
-    expect(world.session.events.at(-1)).toMatchObject({ type: 'debug-mode/state', data: { phase: 'waiting-for-repro' } })
-    expect(world.flushes.count).toBe(1)
+    expect(world.runtime.phase(world.session.id)).toBe('waiting-for-repro')
+    expect(world.session.events).toHaveLength(0)
   })
 
   it.each([
@@ -330,9 +338,7 @@ describe('debug-mode setup runtime', () => {
     const output = await consumeResponse(world, textChunks(handoff))
     expect(output.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'text'
       && chunk.block.text.includes(`Log: ${handoffLogPath}`))).toBe(true)
-    expect(world.session.events.at(-1)).toMatchObject({
-      type: 'debug-mode/state', data: { phase: 'waiting-for-repro', handoff: { logPath: handoffLogPath } },
-    })
+    expect(world.runtime.phase(world.session.id)).toBe('waiting-for-repro')
   })
 
   it('reports a log-path mismatch separately from a missing probe', async () => {
@@ -358,7 +364,7 @@ describe('debug-mode setup runtime', () => {
   it('accepts a fresh log for the next analyzing round and rejects log reuse', async () => {
     const world = await runtimeWorld()
     await consumeResponse(world, textChunks(HANDOFF), { marked: true })
-    world.session.append('debug-mode/state', { version: 1, phase: 'analyzing' })
+    await enterAnalyzing(world)
     expect(world.guard({ agent: world.agent, name: 'job_kill', arguments: { job_id: 'bash-1' } } as unknown as ToolExecution))
       .toMatch(/until the user clicks Fixed/)
     expect(world.guard({
@@ -388,11 +394,9 @@ describe('debug-mode setup runtime', () => {
     const secondOutput = await consumeResponse(world, textChunks(secondHandoff))
     expect(secondOutput.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'text'
       && chunk.block.text.includes(`Log: ${SECOND_LOG_PATH}`))).toBe(true)
-    expect(world.session.events.at(-1)).toMatchObject({
-      type: 'debug-mode/state', data: { phase: 'waiting-for-repro', handoff: { logPath: SECOND_LOG_PATH } },
-    })
+    expect(world.runtime.phase(world.session.id)).toBe('waiting-for-repro')
 
-    world.session.append('debug-mode/state', { version: 1, phase: 'analyzing' })
+    await enterAnalyzing(world)
     await prepareTransport(world, { sessionId: SESSION_ID, logPath: ABSOLUTE_LOG_PATH, ingestUrl: INGEST_URL })
     const reusedProbe = {
       agent: world.agent, name: 'edit', arguments: { new_string: VALID_PROBE },
@@ -448,13 +452,13 @@ describe('debug-mode setup runtime', () => {
     await expect(exit.ctx.waterfall(exit.ctx as never, 'agent/pre-step',
       preStepPayload(exit.agent, [user('退出 Debug Mode')]),
       () => Promise.resolve(accepted))).resolves.toEqual({ kind: 'reject' })
-    expect(exit.session.events.at(-1)).toMatchObject({ data: { phase: 'inactive' } })
+    expect(exit.runtime.phase(exit.session.id)).toBe('inactive')
 
     const fixed = await runtimeWorld('setup')
     await expect(fixed.ctx.waterfall(fixed.ctx as never, 'agent/pre-step',
       preStepPayload(fixed.agent, [user('已修复，请清理调试日志和插桩代码')]),
       () => Promise.resolve(accepted))).resolves.toBe(accepted)
-    expect(fixed.session.events.at(-1)).toMatchObject({ data: { phase: 'inactive' } })
+    expect(fixed.runtime.phase(fixed.session.id)).toBe('inactive')
 
     const setup = await runtimeWorld('setup')
     await expect(setup.ctx.waterfall(setup.ctx as never, 'agent/pre-step',
@@ -483,15 +487,15 @@ describe('debug-mode setup runtime', () => {
     await expect(waiting.ctx.waterfall(waiting.ctx as never, 'agent/pre-step',
       preStepPayload(waiting.agent, [user('continue')]),
       () => Promise.resolve(accepted))).resolves.toBe(accepted)
-    expect(waiting.session.events.at(-1)).toMatchObject({ data: { phase: 'analyzing' } })
-    expect(waiting.flushes.count).toBe(1)
+    expect(waiting.runtime.phase(waiting.session.id)).toBe('analyzing')
   })
 
   it('ignores unowned tool executions and clears setup counters outside setup', async () => {
     const world = await runtimeWorld()
     expect(world.guard({} as ToolExecution)).toBeUndefined()
     expect(world.guard({ agent: world.agent } as ToolExecution)).toBeUndefined()
-    world.session.append('debug-mode/state', { version: 1, phase: 'analyzing' })
+    await consumeResponse(world, textChunks(HANDOFF), { marked: true })
+    await enterAnalyzing(world)
     expect(world.guard({ agent: world.agent } as ToolExecution)).toBeUndefined()
     await world.ctx.waterfall(
       world.ctx as never,
@@ -525,7 +529,7 @@ describe('debug-mode setup runtime', () => {
     const stale = await runtimeWorld()
     const staleExec = { agent: stale.agent, name: 'write', arguments: { content: '__codexDebug' } } as ToolExecution
     stale.guard(staleExec)
-    stale.session.append('debug-mode/state', { version: 1, phase: 'setup' })
+    stale.runtime.activate(stale.agent)
     await stale.ctx.waterfall(
       stale.ctx as never,
       'tools/post-execute',
@@ -533,5 +537,7 @@ describe('debug-mode setup runtime', () => {
       { isError: false } as ToolExecutionResult,
       () => Promise.resolve({ kind: 'accept' } as PostToolDecision),
     )
+    stale.ctx.emit('session/disposed', stale.session)
+    expect(stale.runtime.phase(stale.session.id)).toBe('inactive')
   })
 })

@@ -4,7 +4,7 @@
  * for the next real user turn without waking the model; the browser half turns
  * its local success acknowledgment into the dock UI.
  * Continue and fixed remain model-visible messages; Exit submits a Host-owned
- * control message that deactivates the durable phase before any model request.
+ * control message that deactivates the process-local phase before any model request.
  * @module dsh-debug-mode
  */
 import type { Context } from '@deepseek-ai/cordis';

@@ -10,12 +10,12 @@ if (manifest.dsh?.client?.platform !== 'web') throw new Error('missing dsh.clien
 
 for (const relative of [
   'lib/index.js',
-  'lib/invariant.js',
   'lib/client.js',
   'scripts/new_debug_session.py',
   'scripts/debug_ingest_server.py',
   'scripts/summarize_debug_log.py',
   'scripts/find_instrumentation.py',
+  'scripts/repair_debug_mode_sessions.py',
   'cordis.patch.yml',
 ]) {
   if (!existsSync(join(root, relative))) throw new Error(`missing release artifact: ${relative}`)

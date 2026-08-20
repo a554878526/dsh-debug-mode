@@ -94,12 +94,10 @@ describe('ui-debug-mode host plugin', () => {
     const disposer = vi.fn()
     const register = vi.fn(() => disposer)
     const commandRegister = vi.fn<(definition: CommandDefinition) => void>()
-    const flush = vi.fn(() => Promise.resolve())
-    const append = vi.fn(() => ({ seq: 17 }))
     ctx.provide('skills', { register })
     ctx.provide('commands', { register: commandRegister })
     ctx.provide('llm', {})
-    ctx.provide('sessions', { flush, get: vi.fn(), list: () => [] })
+    ctx.provide('sessions', { flush: vi.fn(), get: vi.fn(), list: () => [] })
     ctx.provide('tools', { guard: vi.fn(), register: vi.fn() })
     const resolveResourceBase = internals.resolveResourceBase
     internals.resolveResourceBase = () => '/installed/debug-mode/scripts'
@@ -114,7 +112,7 @@ describe('ui-debug-mode host plugin', () => {
     const inject = vi.fn()
     const agent = {
       status: 'idle',
-      session: { append, events: [] },
+      session: { seq: 17, events: [] },
       inject,
     } as unknown as Agent
     expect(command).toMatchObject({ name: DEBUG_MODE_COMMAND, description: 'Start Debug Mode' })
@@ -125,13 +123,11 @@ describe('ui-debug-mode host plugin', () => {
       attachments: [],
       signal: new AbortController().signal,
     })).resolves.toEqual({ kind: 'success', sourceEventSeq: 17 })
-    expect(append).toHaveBeenCalledWith('debug-mode/state', { version: 1, phase: 'setup' })
     const skill = debugModeSkill('/installed/debug-mode/scripts')
     expect(inject).toHaveBeenCalledWith(expect.objectContaining({
       content: [{ type: 'text', text: renderSkillContent({ ...skill, provider: 'runtime' }) }],
       source: { kind: 'plugin', plugin: 'debug-mode' },
     }))
-    expect(flush).toHaveBeenCalledWith(agent.session)
 
     await fiber.dispose()
     expect(disposer).toHaveBeenCalledTimes(1)

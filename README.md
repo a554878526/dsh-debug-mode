@@ -18,6 +18,15 @@ Restart the `web` profile, open a new task, run `/debug`, and then describe the 
 dsh plugin --profile web remove dsh-debug-mode
 ```
 
+### Recover history written by 0.1.1 or earlier
+
+Versions through 0.1.1 wrote a required `debug-mode/state` event that an official DSH build does not recognize when reopening history. Stop `dsh web`, then run the repository's repair helper. It is read-only without `--apply`; apply mode backs up every changed compressed log before replacing it atomically.
+
+```sh
+python3 scripts/repair_debug_mode_sessions.py
+python3 scripts/repair_debug_mode_sessions.py --apply
+```
+
 ## Can later agents use the bundled scripts?
 
 Yes. The package ships all four Python helpers in `scripts/`. When the Host loads `lib/index.js`, it resolves that installed directory relative to `import.meta.url` and registers it as the `debug-mode` skill's directory `resourceBase`. DSH therefore renders an absolute `<skill_resources>` directory for the agent, and the skill tells the agent to run the helper names from that directory. This works from a Git dependency, packed release, or local checkout without a machine-specific source path.
@@ -37,9 +46,9 @@ For a local DSH profile smoke test, run this from the repository checkout and re
 dsh plugin --profile web add .
 ```
 
-Runtime-first Debug Mode, one dual-face package. The host half registers the `debug-mode` skill, `/debug`, and durable phase enforcement; the browser half exposes the command through the composer's always-available Commands menu and renders the active loop strip in `conversation.input.dock`.
+Runtime-first Debug Mode, one dual-face package. The host half registers the `debug-mode` skill, `/debug`, and process-local phase enforcement; the browser half exposes the command through the composer's always-available Commands menu and renders the active loop strip in `conversation.input.dock`.
 
-Running `/debug` appends `debug-mode/state { phase: "setup" }`, opens the strip immediately, and queues the canonical rendered `debug-mode` skill content for the next real user turn; it does not wake the model by itself. The model therefore receives the fast-start contract without choosing the skill tool. The strip submits `继续分析`, `已修复，请清理调试日志和插桩代码`, or `退出 Debug Mode`. Fixed closes Host enforcement before the cleanup turn; Exit closes it without a model request.
+Running `/debug` activates process-local setup state, opens the strip immediately, and queues the canonical rendered `debug-mode` skill content for the next real user turn; it does not wake the model by itself. The model therefore receives the fast-start contract without choosing the skill tool. The strip submits `继续分析`, `已修复，请清理调试日志和插桩代码`, or `退出 Debug Mode`. Fixed closes Host enforcement before the cleanup turn; Exit closes it without a model request. The plugin does not write a custom session event, so an out-of-tree install cannot make DSH history unreadable.
 
 Four supported helpers ship under `scripts/` (`new_debug_session.py`, `debug_ingest_server.py`, `summarize_debug_log.py`, `find_instrumentation.py`). The runtime skill resolves that installed directory from `import.meta.url` and publishes it as its directory `resourceBase`, so source checkouts, packed releases, pnpm Git dependencies, and a standalone plugin repository use the same relative names without a machine-specific path. The skill requires these helpers first and permits inline fallback only after a helper is missing or fails.
 
@@ -71,7 +80,7 @@ The rendered skill context and Host-rendered handoff join the request's appended
 
 ## Known Limitations and Deferred Work
 
-- **The dock flag remains transient client state** — the Host phase survives reload in `debug-mode/state`, but the strip does not restore itself from that event yet. Run `/debug` again to restore the controls and restart setup.
+- **Debug Mode state is process-local** — a Host restart, page reload, or session reopen ends the active loop. Run `/debug` again to restore the controls and restart setup. This avoids writing an out-of-tree event type that the current DSH persistence API cannot mark ignorable.
 - **Exit does not retract queued context** — if the user exits before sending the next real message, the already queued activation context still enters that next request even though Host enforcement is inactive.
 - **Setup output is intentionally buffered** — tool activity appears only after each model response completes; this prevents discarded diagnosis text from streaming into the UI.
 - **Cleanup runs in the next model turn** — `已修复` submits a message rather than deleting files itself; the skill directs the model to remove probes and delete `.codex-debug/` logs. Mechanical cleanup is therefore model-owned, not a host service.
