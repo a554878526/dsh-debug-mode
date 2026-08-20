@@ -33,6 +33,10 @@ const PROBE_REQUIRED_RESULT = 'Debug Mode rejected the reproduction handoff beca
   + 'Insert a marked probe (a `__codexDebug` / `CODEX_DEBUG` template) with the edit or write tool, '
   + 'then submit the <debug_reproduction_handoff> marker again.'
 
+const LOG_PATH_MISMATCH_RESULT = 'Debug Mode rejected the reproduction handoff because its logPath does not identify '
+  + 'the log created by new_debug_session.py. Copy the helper logPath or use its equivalent '
+  + '`.codex-debug/debug-<session>.jsonl` path, then submit the handoff again.'
+
 interface DebugTransportFacts {
   sessionId: string
   logPath: string
@@ -116,6 +120,19 @@ function parseTransportFacts(text: string): DebugTransportFacts | undefined {
     || logPath === undefined || logPath.length === 0
     || ingestUrl === undefined || !/^http:\/\/127\.0\.0\.1:\d+\/log$/.test(ingestUrl)) return
   return { sessionId, logPath, ingestUrl }
+}
+
+/** Compare helper and handoff paths by their repository-local Debug Mode log identity. */
+function debugLogIdentity(logPath: string): string {
+  const slashed = logPath.replaceAll('\\', '/')
+  const absoluteMarker = '/.codex-debug/'
+  const markerIndex = slashed.lastIndexOf(absoluteMarker)
+  if (markerIndex >= 0) return slashed.slice(markerIndex + 1)
+  return slashed.replace(/^(?:\.\/)+/, '')
+}
+
+function sameDebugLogPath(left: string, right: string): boolean {
+  return debugLogIdentity(left) === debugLogIdentity(right)
 }
 
 function isTransportBackedProbe(content: string, facts: DebugTransportFacts): boolean {
@@ -308,13 +325,17 @@ async function* enforceSetupResponse(
   }
 
   const setupState = setupStates.get(session.id)
-  if (setupState?.insertedProbe !== true || setupState.transport?.logPath !== handoff.logPath) {
+  if (setupState?.insertedProbe !== true) {
     yield* replacementChunks(PROBE_REQUIRED_RESULT, chunks)
+    return
+  }
+  if (setupState.transport === undefined || !sameDebugLogPath(setupState.transport.logPath, handoff.logPath)) {
+    yield* replacementChunks(LOG_PATH_MISMATCH_RESULT, chunks)
     return
   }
   const reusedLog = session.events.some(event => event.type === 'debug-mode/state'
     && event.data.phase === 'waiting-for-repro'
-    && event.data.handoff.logPath === handoff.logPath)
+    && sameDebugLogPath(event.data.handoff.logPath, handoff.logPath))
   if (reusedLog) {
     yield* replacementChunks('Debug Mode rejected the handoff because this logPath was already used by an earlier reproduction round. Run new_debug_session.py again and install the next probe with its new sessionId, ingestUrl, and logPath.', chunks)
     return

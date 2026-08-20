@@ -45,6 +45,8 @@ dsh plugin --profile web add .
 
 启动路径以取得第一条非空日志为目标：运行会话脚本、启动它打印的 ingest 命令、只读取足以放置 1-3 个探针的代码，再输出确切的 `<debug_reproduction_handoff>` 包装。setup 不设 Debug Mode 工具次数上限。宿主从成功的 helper 结果提取 session id、日志路径与 ingest URL，观察成功的 server 命令，并且只允许绑定这些事实的 `edit`/`write` 内容。仅写 console 的探针、普通修复、失败写入和不匹配的交接都不能进入 `waiting-for-repro`。
 
+helper 可能输出绝对日志路径，而 handoff 使用文档约定的仓库相对路径 `.codex-debug/...`。宿主会把两者作为同一条 Debug Mode 日志比较；如果日志文件名确实不同，则返回专门的路径不匹配错误，不再误报“没有插桩”。
+
 setup 与 analyzing 响应经过宿主强制执行的 `llm/stream` 过滤器。过滤器会缓存完整 setup 响应，保留中间 reasoning、工具调用与用量以供 thinking provider 回放，并且只在首次交接前移除普通文本。analyzing 期间普通验证报告保持原样，新的交接则像首轮一样经过校验与渲染。每一轮都必须建立新的 helper/server/probe 事实，并使用此前 `waiting-for-repro` 状态未使用过的日志路径。首次 waiting 前继续分析会被拒绝；之后每次点击只消费一条 waiting 消息，直到下一轮 waiting 消息出现才重新启用。
 
 在已修复之前，宿主 guard 会保留完整证据链：analyzing 不能停止 ingest 任务、删除 `.codex-debug`，也不能在没有替换为下一轮 transport-backed 探针时移除探针。根因已证明时只发布验证报告并保持 `analyzing`；只有已修复会记录 `inactive` 并允许清理所有轮次的日志与任务。

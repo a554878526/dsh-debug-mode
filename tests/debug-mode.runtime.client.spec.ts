@@ -13,6 +13,7 @@ import type {} from '../src/types.ts'
 const AGENT_ID = 'debug-mode-runtime' as SessionId
 const SESSION_ID = 'debug-session'
 const LOG_PATH = '.codex-debug/debug.jsonl'
+const ABSOLUTE_LOG_PATH = `/workspace/${LOG_PATH}`
 const INGEST_URL = 'http://127.0.0.1:8765/log'
 const SECOND_SESSION_ID = 'debug-session-2'
 const SECOND_LOG_PATH = '.codex-debug/debug-2.jsonl'
@@ -314,6 +315,46 @@ describe('debug-mode setup runtime', () => {
     expect(world.flushes.count).toBe(1)
   })
 
+  it.each([
+    ['/workspace/.codex-debug/debug.jsonl', LOG_PATH],
+    ['C:\\workspace\\.codex-debug\\debug.jsonl', LOG_PATH],
+  ])('accepts helper path %s for relative handoff %s', async (helperLogPath, handoffLogPath) => {
+    const world = await runtimeWorld()
+    await prepareTransport(world, { sessionId: SESSION_ID, logPath: helperLogPath, ingestUrl: INGEST_URL })
+    const probe = {
+      agent: world.agent, name: 'edit', arguments: { new_string: VALID_PROBE },
+    } as unknown as ToolExecution
+    expect(world.guard(probe)).toBeUndefined()
+    await settle(world, probe, false)
+    const handoff = `<debug_reproduction_handoff>{"probeLocations":["src/value.ts:path"],"reproductionAction":"Copy once.","logPath":"${handoffLogPath}"}</debug_reproduction_handoff>`
+    const output = await consumeResponse(world, textChunks(handoff))
+    expect(output.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'text'
+      && chunk.block.text.includes(`Log: ${handoffLogPath}`))).toBe(true)
+    expect(world.session.events.at(-1)).toMatchObject({
+      type: 'debug-mode/state', data: { phase: 'waiting-for-repro', handoff: { logPath: handoffLogPath } },
+    })
+  })
+
+  it('reports a log-path mismatch separately from a missing probe', async () => {
+    const world = await runtimeWorld()
+    await prepareTransport(world, {
+      sessionId: SESSION_ID,
+      logPath: '/workspace/.codex-debug/debug-other.jsonl',
+      ingestUrl: INGEST_URL,
+    })
+    const probe = {
+      agent: world.agent, name: 'edit', arguments: { new_string: VALID_PROBE },
+    } as unknown as ToolExecution
+    expect(world.guard(probe)).toBeUndefined()
+    await settle(world, probe, false)
+    const output = await consumeResponse(world, textChunks(HANDOFF))
+    const text = output.flatMap(chunk => chunk.type === 'block-end' && chunk.block.type === 'text'
+      ? [chunk.block.text]
+      : []).join('')
+    expect(text).toContain('logPath does not identify')
+    expect(text).not.toContain('no probe was actually inserted')
+  })
+
   it('accepts a fresh log for the next analyzing round and rejects log reuse', async () => {
     const world = await runtimeWorld()
     await consumeResponse(world, textChunks(HANDOFF), { marked: true })
@@ -352,7 +393,7 @@ describe('debug-mode setup runtime', () => {
     })
 
     world.session.append('debug-mode/state', { version: 1, phase: 'analyzing' })
-    await prepareTransport(world)
+    await prepareTransport(world, { sessionId: SESSION_ID, logPath: ABSOLUTE_LOG_PATH, ingestUrl: INGEST_URL })
     const reusedProbe = {
       agent: world.agent, name: 'edit', arguments: { new_string: VALID_PROBE },
     } as unknown as ToolExecution
