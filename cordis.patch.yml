@@ -1,0 +1,5 @@
+# Install Debug Mode in the DSH host tree. The package manifest separately
+# declares the browser half through dsh.client.
+- insert:
+    - id: debug-mode
+      name: dsh-debug-mode
