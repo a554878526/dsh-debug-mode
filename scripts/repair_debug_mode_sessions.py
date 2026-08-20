@@ -87,21 +87,35 @@ def replace_with_backup(path: Path, content: bytes, sessions_root: Path, backup_
     backup.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, backup)
 
-    plain_fd, plain_name = tempfile.mkstemp(prefix=".debug-mode-repair-", suffix=".jsonl", dir=path.parent)
-    os.close(plain_fd)
-    compressed = path.with_name(f".{path.name}.debug-mode-repair")
+    first_newline = content.find(b"\n")
+    if first_newline < 0:
+        raise RuntimeError(f"{path}: session log has no complete header line")
+    header = content[: first_newline + 1]
+    body = content[first_newline + 1 :]
+    if header.count(b"\n") != 1:
+        raise RuntimeError(f"{path}: session header must be exactly one line")
+
+    header_fd, header_name = tempfile.mkstemp(prefix=".debug-mode-header-", suffix=".jsonl", dir=path.parent)
+    body_fd, body_name = tempfile.mkstemp(prefix=".debug-mode-body-", suffix=".jsonl", dir=path.parent)
+    compressed_fd, compressed_name = tempfile.mkstemp(prefix=".debug-mode-repair-", suffix=".zstd", dir=path.parent)
+    os.close(header_fd)
+    os.close(body_fd)
+    os.close(compressed_fd)
+    compressed = Path(compressed_name)
     try:
-        Path(plain_name).write_bytes(content)
-        subprocess.run(
-            ["zstd", "-q", "-f", "-T0", plain_name, "-o", str(compressed)],
-            check=True,
-        )
+        Path(header_name).write_bytes(header)
+        Path(body_name).write_bytes(body)
+        with compressed.open("wb") as output:
+            subprocess.run(["zstd", "-q", "-T0", "-c", header_name], check=True, stdout=output)
+            if body:
+                subprocess.run(["zstd", "-q", "-T0", "-c", body_name], check=True, stdout=output)
+            output.flush()
+            os.fsync(output.fileno())
         shutil.copymode(path, compressed)
-        with compressed.open("rb") as handle:
-            os.fsync(handle.fileno())
         os.replace(compressed, path)
     finally:
-        Path(plain_name).unlink(missing_ok=True)
+        Path(header_name).unlink(missing_ok=True)
+        Path(body_name).unlink(missing_ok=True)
         compressed.unlink(missing_ok=True)
 
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +23,8 @@ describe('repair_debug_mode_sessions.py', () => {
     roots.push(root)
     const home = join(root, 'home')
     const archive = join(home, 'sessions', 'workspace', 'session-test', 'session.jsonl.zstd')
-    const plain = join(root, 'session.jsonl')
+    const headerPlain = join(root, 'header.jsonl')
+    const eventsPlain = join(root, 'events.jsonl')
     const backup = join(root, 'backup')
     mkdirSync(dirname(archive), { recursive: true })
     const events = [
@@ -31,8 +32,10 @@ describe('repair_debug_mode_sessions.py', () => {
       { type: 'debug-mode/state', seq: 1, time: 2, data: { version: 1, phase: 'setup' } },
       { type: 'debug-mode/state', seq: 2, time: 3, data: { version: 1, phase: 'inactive' }, ignorable: true },
     ]
-    writeFileSync(plain, events.map(event => JSON.stringify(event)).join('\n') + '\n')
-    execFileSync('zstd', ['-q', '-f', plain, '-o', archive])
+    writeFileSync(headerPlain, JSON.stringify(events[0]) + '\n')
+    writeFileSync(eventsPlain, events.slice(1).map(event => JSON.stringify(event)).join('\n') + '\n')
+    writeFileSync(archive, execFileSync('zstd', ['-q', '-c', headerPlain]))
+    appendFileSync(archive, execFileSync('zstd', ['-q', '-c', eventsPlain]))
     const original = readFileSync(archive)
 
     const dryRun = execFileSync('python3', [SCRIPT, '--dsh-home', home], { encoding: 'utf8' })
