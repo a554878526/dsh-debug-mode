@@ -4,6 +4,8 @@ English | [中文](README.zh.md)
 
 Standalone runtime-first Debug Mode plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
+![Select the debug command from the DeepSeek Harness command menu](docs/images/debug-command.png)
+
 ## Install
 
 Prerequisites: Node.js `^22.19.0 || >=24.0.0`, pnpm on `PATH`, and DSH `0.1.0-rc.7` or later.

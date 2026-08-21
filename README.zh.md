@@ -4,6 +4,8 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的独立运行时优先 Debug Mode 插件。
 
+![在 DeepSeek Harness 命令菜单中选择 debug 命令](docs/images/debug-command.png)
+
 ## 安装
 
 前置条件：Node.js `^22.19.0 || >=24.0.0`、`PATH` 中可用的 pnpm，以及 DSH `0.1.0-rc.7` 或更高版本。
