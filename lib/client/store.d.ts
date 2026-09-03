@@ -2,7 +2,7 @@
  * Per-session Debug Mode presentation state for the input-dock strip. The
  * state is transient and never changes the model-visible conversation.
  */
-import { type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client';
+import type { StoreHandle } from '@deepseek-ai/dsh-client-ui-slots';
 /** Debug Mode store state: transient UI mode, never persisted. */
 export interface DebugModeState {
     /** Whether Debug Mode is active for the current session. */
@@ -22,5 +22,5 @@ type DebugModeActions = {
  * Declare the per-session Debug Mode state and its write surface.
  * @returns the shared store handle.
  */
-export declare function createDebugModeStore(): EngineStoreHandle<DebugModeState, DebugModeActions>;
+export declare function createDebugModeStore(): StoreHandle<DebugModeState, DebugModeActions>;
 export {};

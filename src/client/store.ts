@@ -2,7 +2,7 @@
  * Per-session Debug Mode presentation state for the input-dock strip. The
  * state is transient and never changes the model-visible conversation.
  */
-import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-runtime/client'
+import type { StoreHandle } from '@deepseek-ai/dsh-client-ui-slots'
 
 /** Debug Mode store state: transient UI mode, never persisted. */
 export interface DebugModeState {
@@ -25,17 +25,43 @@ type DebugModeActions = {
  * Declare the per-session Debug Mode state and its write surface.
  * @returns the shared store handle.
  */
-export function createDebugModeStore(): EngineStoreHandle<DebugModeState, DebugModeActions> {
-  return defineStore({
+export function createDebugModeStore(): StoreHandle<DebugModeState, DebugModeActions> {
+  const spec = {
     init: (): DebugModeState => ({ enabled: false, activationSeq: null, consumedWaitingSeq: null }),
     actions: {
-      setEnabled: (draft, enabled) => { draft.enabled = enabled },
-      activate: (draft, sourceEventSeq) => {
+      setEnabled: (draft: DebugModeState, enabled: boolean) => { draft.enabled = enabled },
+      activate: (draft: DebugModeState, sourceEventSeq: number) => {
         draft.enabled = true
         draft.activationSeq = sourceEventSeq
         draft.consumedWaitingSeq = null
       },
-      consumeWaiting: (draft, waitingSeq) => { draft.consumedWaitingSeq = waitingSeq },
+      consumeWaiting: (draft: DebugModeState, waitingSeq: number) => { draft.consumedWaitingSeq = waitingSeq },
     },
-  })
+  }
+  return {
+    spec,
+    create() {
+      let state = spec.init()
+      const listeners = new Set<() => void>()
+      const update = (mutate: (draft: DebugModeState) => void): void => {
+        const draft = { ...state }
+        mutate(draft)
+        state = draft
+        for (const listener of [...listeners]) listener()
+      }
+      return {
+        actions: {
+          setEnabled: enabled => { update(draft => spec.actions.setEnabled(draft, enabled)) },
+          activate: sourceEventSeq => { update(draft => spec.actions.activate(draft, sourceEventSeq)) },
+          consumeWaiting: waitingSeq => { update(draft => spec.actions.consumeWaiting(draft, waitingSeq)) },
+        },
+        getSnapshot: () => state,
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+        clearPersisted: () => undefined,
+      }
+    },
+  }
 }

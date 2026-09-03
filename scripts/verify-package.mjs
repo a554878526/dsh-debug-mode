@@ -38,5 +38,8 @@ if (!client.includes('id: "dsh-debug-mode"') && !client.includes('id:"dsh-debug-
   throw new Error('client bundle does not register dsh-debug-mode')
 }
 if (!client.includes('data-plugin-css')) throw new Error('client bundle does not include its dock stylesheet')
+if (client.includes('require("@deepseek-ai/dsh-client-runtime/client")')) {
+  throw new Error('client bundle must not depend on the legacy dynamic runtime module')
+}
 
 console.log(`verified DSH bundle and helper resource base: ${resourceBase}`)
