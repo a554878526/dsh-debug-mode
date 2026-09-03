@@ -11,22 +11,40 @@ import {
 } from './slots.ts'
 import css from './DebugModeDock.module.css'
 
+interface DebugModeTranscriptNode {
+  readonly kind: string
+  readonly seq: number
+  readonly blocks?: readonly { readonly kind: string, readonly text?: string }[]
+}
+
+interface DebugModeTranscriptSnapshot {
+  readonly nodes?: readonly DebugModeTranscriptNode[]
+  readonly legacy?: { readonly nodes: readonly DebugModeTranscriptNode[] }
+}
+
+type TranscriptSelectorHook = <Selected>(
+  selector: (snapshot: DebugModeTranscriptSnapshot) => Selected,
+) => Selected
+
 /**
  * The dock strip.
  * @param props - runtime share (input kit), store share, and locale seat.
  */
-export function DebugModeDock({
-  useStore, useSession, actions, inputActions, subscribeActivation, t,
-}: DebugModeDockProps & PropsLocale<'debug-mode'>) {
+export function DebugModeDock(props: DebugModeDockProps & PropsLocale<'debug-mode'>) {
+  const { useStore, useSession, actions, inputActions, subscribeActivation, t } = props
+  const useChat = (props as typeof props & { useChat?: TranscriptSelectorHook }).useChat
+  const useTranscript = typeof useChat === 'function'
+    ? useChat
+    : useSession as unknown as TranscriptSelectorHook
   const enabled = useStore(state => state.enabled)
   const activationSeq = useStore(state => state.activationSeq)
   const consumedWaitingSeq = useStore(state => state.consumedWaitingSeq)
-  const waitingSeq = useSession((snapshot) => {
+  const waitingSeq = useTranscript((snapshot) => {
     if (activationSeq === null) return null
     let latest: number | null = null
-    for (const node of snapshot.nodes) {
+    for (const node of snapshot.legacy?.nodes ?? snapshot.nodes ?? []) {
       if (node.kind === 'assistant' && node.seq > activationSeq
-        && node.blocks.some(block => block.kind === 'text' && block.text.startsWith(DEBUG_MODE_WAITING_PREFIX))) {
+        && node.blocks?.some(block => block.kind === 'text' && block.text?.startsWith(DEBUG_MODE_WAITING_PREFIX))) {
         latest = latest === null ? node.seq : Math.max(latest, node.seq)
       }
     }

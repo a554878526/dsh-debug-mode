@@ -450,19 +450,19 @@ describe('debug-mode setup runtime', () => {
 
     const exit = await runtimeWorld('setup')
     await expect(exit.ctx.waterfall(exit.ctx as never, 'agent/pre-step',
-      preStepPayload(exit.agent, [user('退出 Debug Mode')]),
+      preStepPayload(exit.agent, [user('Exit Debug Mode')]),
       () => Promise.resolve(accepted))).resolves.toEqual({ kind: 'reject' })
     expect(exit.runtime.phase(exit.session.id)).toBe('inactive')
 
     const fixed = await runtimeWorld('setup')
     await expect(fixed.ctx.waterfall(fixed.ctx as never, 'agent/pre-step',
-      preStepPayload(fixed.agent, [user('已修复，请清理调试日志和插桩代码')]),
+      preStepPayload(fixed.agent, [user('Fixed. Clean up debug logs and instrumentation.')]),
       () => Promise.resolve(accepted))).resolves.toBe(accepted)
     expect(fixed.runtime.phase(fixed.session.id)).toBe('inactive')
 
     const setup = await runtimeWorld('setup')
     await expect(setup.ctx.waterfall(setup.ctx as never, 'agent/pre-step',
-      preStepPayload(setup.agent, [user('继续分析')]),
+      preStepPayload(setup.agent, [user('Continue analysis')]),
       () => Promise.resolve(accepted))).resolves.toEqual({ kind: 'reject' })
 
     const setupOther = await runtimeWorld('setup')

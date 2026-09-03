@@ -2,88 +2,125 @@
 
 English | [中文](README.zh.md)
 
-Standalone runtime-first Debug Mode plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+Runtime evidence for AI debugging in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-![Select the debug command from the DeepSeek Harness command menu](docs/images/debug-command.png)
+Instead of asking an agent to guess from source code or asking you to copy browser and server logs into chat, Debug Mode installs surgical probes and captures their events as structured JSONL. The agent can then prove the failing branch, make a focused fix, verify it, and remove every temporary probe.
+
+**One command. One evidence loop. No log hunting.**
+
+![Select Debug Mode from the command menu](docs/images/debug-command.png)
+
+![Debug Mode keeps reproduction, analysis, and cleanup controls beside the composer](docs/images/debug-mode-dock.png)
+
+## Why use it?
+
+| Ordinary debugging | Debug Mode |
+| --- | --- |
+| Browser console and server logs live in separate places | Browser, Electron, and Node evidence lands in one JSONL stream |
+| Large unstructured logs bury the relevant branch | 1–3 probes record only hypothesis-relevant fields |
+| The agent reasons from a pasted snapshot | The agent reads fresh runtime evidence after each reproduction |
+| Temporary logging is easy to forget | The **Fixed** action triggers probe, process, and log cleanup |
+
+Debug Mode is especially useful for UI state, worker boundaries, async races, serialization failures, and bugs that cannot be proven by static code inspection alone.
 
 ## Install
 
-Prerequisites: Node.js `^22.19.0 || >=24.0.0`, pnpm on `PATH`, and DSH `0.1.0-rc.7` or later.
+Requires Node.js `^22.19.0 || >=24.0.0`, pnpm on `PATH`, and DSH `0.1.0-rc.7` or later.
 
 ```sh
 dsh plugin --profile web add "github:a554878526/dsh-debug-mode#main"
 ```
 
-Restart the `web` profile, open a new task, run `/debug`, and then describe the bug. Remove it with:
+Restart `dsh web`, open a new task, then:
+
+1. Run `/debug` and describe the bug.
+2. Follow the reproduction instruction and click **Continue**.
+3. Review the verified fix, then click **Fixed** to clean up diagnostics.
+
+Remove the plugin with:
 
 ```sh
 dsh plugin --profile web remove dsh-debug-mode
 ```
 
-### Recover history written by 0.1.1 or earlier
+## Structured JSONL evidence
 
-Versions through 0.1.1 wrote a required `debug-mode/state` event that an official DSH build does not recognize when reopening history. Stop `dsh web`, then run the repository's repair helper. It is read-only without `--apply`; apply mode backs up every changed compressed log before replacing it atomically.
+Each line is an independent event, so logs remain streamable, grep-friendly, and easy for an agent to summarize:
 
-```sh
-python3 scripts/repair_debug_mode_sessions.py
-python3 scripts/repair_debug_mode_sessions.py --apply
+```json
+{"sessionId":"a1b2c3","runId":"pre-fix","hypothesisId":"H1","location":"SessionStore.ts:restore","message":"cache lookup","data":{"hit":true,"entryCount":3,"timestampNs":"1775543428486123456"},"timestamp":1775543428486}
 ```
 
-## Can later agents use the bundled scripts?
+Use stable fields:
 
-Yes. The package ships all four Python helpers in `scripts/`. When the Host loads `lib/index.js`, it resolves that installed directory relative to `import.meta.url` and registers it as the `debug-mode` skill's directory `resourceBase`. DSH therefore renders an absolute `<skill_resources>` directory for the agent, and the skill tells the agent to run the helper names from that directory. This works from a Git dependency, packed release, or local checkout without a machine-specific source path.
+- `sessionId` ties events to one debug round.
+- `runId` distinguishes `pre-fix`, `post-fix`, or repeated reproductions.
+- `hypothesisId` connects an event to the assumption it proves or rejects.
+- `location` names the runtime boundary, not just the file.
+- `data` contains the smallest safe payload needed for the decision.
+- `timestamp` is epoch milliseconds; large integer IDs belong in strings.
 
-The plugin must be installed before the DSH process starts, and the user should open a new task after restart so the agent receives the newly registered skill. Python 3 must be available on the Host for the helper scripts.
+Never log secrets, credentials, PII, or full high-volume payloads. Count, sample, hash, or truncate instead.
+
+### Generate a session and probe
+
+The bundled helper prints a session ID, log path, ingest command, and copy-ready Browser/Electron and Node probes:
+
+```sh
+python3 scripts/new_debug_session.py --root .
+```
+
+Start the printed ingest command before using a browser probe. A minimal event is:
+
+```js
+__codexDebug({
+  hypothesisId: "H1",
+  location: "SessionStore.ts:restore",
+  message: "cache lookup",
+  data: { hit: cache.has(key), entryCount: cache.size },
+});
+```
+
+The generated probe sends Browser/Electron events to the local ingest server with `fetch`; Node probes append JSONL directly. Its `JSON.stringify` replacer converts `bigint` values to decimal strings, avoiding serialization errors and precision loss.
+
+After reproduction, summarize the evidence with:
+
+```sh
+python3 scripts/summarize_debug_log.py .codex-debug/debug-<session>.jsonl
+```
+
+In normal use the agent runs these helpers for you. They are documented here for custom instrumentation and CI workflows.
+
+## How the loop works
+
+`/debug` activates a Host-enforced runtime phase and opens the composer dock. The agent must create a fresh session, start a working log transport, and add marked probes before asking for reproduction. **Continue** is disabled until that handoff succeeds.
+
+After evidence arrives, the agent either applies the smallest supported fix or starts a new evidence round with a new log path. It cannot silently replace evidence collection with a console-only probe, broad static analysis, or an early fix. **Fixed** ends enforcement and asks the agent to remove all `CODEX_DEBUG` / `__codexDebug` instrumentation, ingest jobs, and `.codex-debug/` logs.
+
+Four helpers ship with the plugin:
+
+- `new_debug_session.py` creates a session and ready-to-use probes.
+- `debug_ingest_server.py` collects Browser/Electron JSON events.
+- `summarize_debug_log.py` condenses JSONL evidence.
+- `find_instrumentation.py` verifies cleanup.
 
 ## Develop
 
 ```sh
 pnpm install
 pnpm run check
-```
-
-For a local DSH profile smoke test, run this from the repository checkout and restart the profile:
-
-```sh
 dsh plugin --profile web add .
 ```
 
-Runtime-first Debug Mode, one dual-face package. The host half registers the `debug-mode` skill, `/debug`, and process-local phase enforcement; the browser half exposes the command through the composer's always-available Commands menu and renders the active loop strip in `conversation.input.dock`.
+Restart the profile and open a new task after reinstalling so DSH loads the updated Host and client bundles.
 
-Running `/debug` activates process-local setup state, opens the strip immediately, and queues the canonical rendered `debug-mode` skill content for the next real user turn; it does not wake the model by itself. The model therefore receives the fast-start contract without choosing the skill tool. The strip submits `继续分析`, `已修复，请清理调试日志和插桩代码`, or `退出 Debug Mode`. Fixed closes Host enforcement before the cleanup turn; Exit closes it without a model request. The plugin does not write a custom session event, so an out-of-tree install cannot make DSH history unreadable.
+## Compatibility note
 
-Four supported helpers ship under `scripts/` (`new_debug_session.py`, `debug_ingest_server.py`, `summarize_debug_log.py`, `find_instrumentation.py`). The runtime skill resolves that installed directory from `import.meta.url` and publishes it as its directory `resourceBase`, so source checkouts, packed releases, pnpm Git dependencies, and a standalone plugin repository use the same relative names without a machine-specific path. The skill requires these helpers first and permits inline fallback only after a helper is missing or fails.
+Versions `0.1.1` and earlier wrote a `debug-mode/state` event that official DSH builds cannot reopen. Stop `dsh web`, inspect affected logs, then apply the repair with automatic backups:
 
-The startup path optimizes for the first non-empty log: run the session helper, start its printed ingest command, inspect only enough code to place 1-3 probes, and emit the exact `<debug_reproduction_handoff>` wrapper. Setup exploration has no Debug Mode tool-count limit. The Host derives the session id, log path, and ingest URL from the successful helper result, observes the successful server command, and permits only `edit`/`write` content bound to those facts. Console-only probes, ordinary fixes, failed mutations, and mismatched handoffs cannot enter `waiting-for-repro`.
+```sh
+python3 scripts/repair_debug_mode_sessions.py
+python3 scripts/repair_debug_mode_sessions.py --apply
+```
 
-The helper may report an absolute log path while the handoff uses the documented repository-relative `.codex-debug/...` form. The Host compares these as one Debug Mode log identity, while a different log filename receives a dedicated path-mismatch error instead of the misleading “no probe” error.
-
-Setup and analyzing responses pass through a Host-enforced `llm/stream` filter. The filter buffers complete setup responses, retains intermediate reasoning, tool calls, and usage for thinking-provider replay, and removes only ordinary text before the first handoff. During analyzing, ordinary verification reports pass unchanged, while a new handoff is validated and rendered like the first. Every round must establish fresh helper/server/probe facts and a log path not used by an earlier `waiting-for-repro` state. Continue is rejected before the first waiting state, then consumes one waiting message; it unlocks again only after the next round's waiting message.
-
-Before Fixed, Host guards retain the evidence chain: analyzing cannot stop ingest jobs, delete `.codex-debug`, or remove a probe without replacing it with the next transport-backed probe. A proven fix produces a verification report and remains `analyzing`; only Fixed records `inactive` and admits cleanup of all round logs and jobs.
-
-Before evidence arrives, the skill forbids reproduction tests, typechecks, builds, broad static analysis, and fixes. Browser/Electron probes must `fetch` to the running ingest server, which writes JSONL; console-only probes are invalid. Each generated template uses one inline `JSON.stringify` replacer that converts BigInt to a decimal string.
-
-## Model Experience
-
-### Runtime phase and loop controls
-
-#### What the model sees
-
-The `/debug` command records `setup` and queues the same `<skill_content name="debug-mode">` block returned by the skill loader; it enters model history with the next real user turn rather than starting a turn alone. The model emits handoff wrappers, but only Host-rendered reproduction instructions enter the session log. The dock disables Continue until the first instruction, consumes that waiting-message seq on click, and requires a later instruction before another Continue. Each click records `analyzing` before its user message enters the request. Fixed records `inactive` before its cleanup message enters; Exit records `inactive` and rejects the control turn before any model request.
-
-#### Token effect
-
-`/debug` adds the rendered skill context to the next real request but spends no request by itself. A valid handoff contributes one compact Host-rendered assistant message. Continue and Fixed each add one short user message; Exit adds no model tokens.
-
-#### KV Cache effect
-
-The rendered skill context and Host-rendered handoff join the request's appended suffix; Continue and Fixed append one user message. No Debug Mode tool schema is added, and Exit leaves the cache input unchanged.
-
-## Known Limitations and Deferred Work
-
-- **Debug Mode state is process-local** — a Host restart, page reload, or session reopen ends the active loop. Run `/debug` again to restore the controls and restart setup. This avoids writing an out-of-tree event type that the current DSH persistence API cannot mark ignorable.
-- **Exit does not retract queued context** — if the user exits before sending the next real message, the already queued activation context still enters that next request even though Host enforcement is inactive.
-- **Setup output is intentionally buffered** — tool activity appears only after each model response completes; this prevents discarded diagnosis text from streaming into the UI.
-- **Cleanup runs in the next model turn** — `已修复` submits a message rather than deleting files itself; the skill directs the model to remove probes and delete `.codex-debug/` logs. Mechanical cleanup is therefore model-owned, not a host service.
-- **Helper and server recognition use their packaged command names** — Host enforcement recognizes successful `new_debug_session.py` and `debug_ingest_server.py` calls, then binds probe content and handoff data to the helper output. Alternative transports must use the packaged fallback contract or extend this recognizer.
+Current Debug Mode state is process-local: restarting the Host, refreshing the page, or reopening a task ends the active loop. Run `/debug` again to start a new session.

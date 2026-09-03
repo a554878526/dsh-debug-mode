@@ -19,14 +19,14 @@ export const DEBUG_MODE_SKILL: SkillRegistration = {
     'Runtime-first debug loop for the Debug Mode feature. When Debug Mode is active, every turn centers on runtime '
     + 'logs, not static speculation: add temporary marked probes, stop for reproduction evidence, then analyze, '
     + 'make a targeted fix or refine probes, and clean up before finishing. Use when the user runs /debug, '
-    + 'reports a bug, or clicks 继续分析/已修复.',
+    + 'reports a bug, or clicks Continue/Fixed.',
   content: `# Debug Mode
 
 Debug Mode is a runtime-first debugging loop. When the user activates it (runs
-/debug or says "开启 Debug Mode"), every turn must center on runtime
+/debug or says "Enable Debug Mode"), every turn must center on runtime
 evidence — logs — not static speculation. Treat the two UI buttons
-「继续分析」 and 「已修复」 as the only ways to advance the loop, alongside the user
-typing those exact words.
+"Continue" and "Fixed" as the only ways to advance the loop, alongside the user
+typing "Continue analysis" or "Fixed. Clean up debug logs and instrumentation."
 
 ## One iteration
 
@@ -101,7 +101,7 @@ After probes are inserted, emit the exact handoff wrapper above with:
 2. The exact reproduction action.
 3. The JSONL log path under \`.codex-debug/debug-<session>.jsonl\`.
 4. The exact reproduction instruction the Host should show before the user
-   clicks 「继续分析」.
+   clicks "Continue".
 
 The Host buffers setup responses, removes ordinary assistant text, validates the
 handoff wrapper and observed transport, records the waiting phase, and publishes
@@ -110,19 +110,19 @@ recoverable protocol-block message; setup tools remain available for the next
 attempt. Do not optimize,
 fix, test, typecheck, or clean up until evidence arrives.
 
-## Continue (「继续分析」)
+## Continue
 
 1. Read and summarize the collected logs (JSONL under \`.codex-debug/\`).
 2. Judge whether the root cause is proven.
 3. Proven → make the smallest targeted fix and verify (run the reproduction or a
    focused test). Publish a verification report and wait for the user to click
-   「已修复」. Do not remove probes, stop ingest jobs, or delete logs yet.
+   "Fixed". Do not remove probes, stop ingest jobs, or delete logs yet.
 4. Not proven, or another runtime verification is needed → run
    \`new_debug_session.py\` again, start its new ingest command, update the probes
    to that new session id/URL, and submit a new handoff. Every reproduction
    round MUST use a new logPath; retain every earlier round log until Fixed.
 
-## Fixed (「已修复」)
+## Fixed
 
 1. Remove every temporary probe: \`CODEX_DEBUG\` / \`__codexDebug\` markers,
    helper imports, and temporary log writes.

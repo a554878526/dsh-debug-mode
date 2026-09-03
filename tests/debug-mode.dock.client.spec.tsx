@@ -25,9 +25,14 @@ function props(enabled: boolean, waitingSeq: number | null = null, consumedWaiti
       enabled, activationSeq: enabled ? 5 : null, consumedWaitingSeq,
     }),
     useSession: (sel: (snapshot: unknown) => unknown) => sel({
-      nodes: waitingSeq === null ? [] : [{
-        kind: 'assistant', seq: waitingSeq, blocks: [{ kind: 'text', text: 'Debug Mode is waiting for reproduction.' }],
-      }],
+      sessionId: 'debug-mode-test', openState: 'open',
+    }),
+    useChat: (sel: (snapshot: unknown) => unknown) => sel({
+      legacy: {
+        nodes: waitingSeq === null ? [] : [{
+          kind: 'assistant', seq: waitingSeq, blocks: [{ kind: 'text', text: 'Debug Mode is waiting for reproduction.' }],
+        }],
+      },
     }),
     actions: { setEnabled, activate: activateAction, consumeWaiting },
     inputActions: { setDraft, submit },
@@ -65,18 +70,23 @@ describe('DebugModeDock', () => {
 
   it('disables Continue while setup has no committed handoff', () => {
     render(<DebugModeDock {...props(true)} />)
-    expect(screen.getByText('Debug Mode 已开启')).toBeTruthy()
-    expect(screen.getByText('正在准备日志与插桩，完成交接后才可继续')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '继续分析' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('button', { name: '已修复' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '退出' })).toBeTruthy()
+    expect(screen.getByText('Debug Mode on')).toBeTruthy()
+    expect(screen.getByText('Preparing logs and probes; Continue unlocks after handoff')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Fixed' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Exit' })).toBeTruthy()
   })
 
-  it('继续分析 submits the pinned continue message', () => {
+  it('reads transcript nodes from the current Chat projection instead of the lifecycle snapshot', () => {
+    expect(() => render(<DebugModeDock {...props(true, 6)} />)).not.toThrow()
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', false)
+  })
+
+  it('Continue submits the pinned continue message', () => {
     const p = props(true, 6)
     render(<DebugModeDock {...p} />)
-    expect(screen.getByText('复现后点「继续分析」；确认修复后点「已修复」')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '继续分析' }))
+    expect(screen.getByText('Reproduce, then Continue; Fixed when resolved')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(p.setDraft).toHaveBeenCalledWith(DEBUG_MODE_CONTINUE_MESSAGE)
     expect(p.submit).toHaveBeenCalledTimes(1)
     expect(p.consumeWaiting).toHaveBeenCalledWith(6)
@@ -86,26 +96,26 @@ describe('DebugModeDock', () => {
   it('requires a newer waiting message before Continue can run again', () => {
     const consumed = props(true, 6, 6)
     const { rerender } = render(<DebugModeDock {...consumed} />)
-    expect(screen.getByRole('button', { name: '继续分析' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', true)
     rerender(<DebugModeDock {...props(true, 7, 6)} />)
-    expect(screen.getByRole('button', { name: '继续分析' })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', false)
   })
 
-  it('已修复 submits cleanup and closes the dock', () => {
+  it('Fixed submits cleanup and closes the dock', () => {
     const p = props(true)
     render(<DebugModeDock {...p} />)
-    fireEvent.click(screen.getByRole('button', { name: '已修复' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Fixed' }))
     expect(p.setDraft).toHaveBeenCalledWith(DEBUG_MODE_FIXED_MESSAGE)
     expect(p.submit).toHaveBeenCalledTimes(1)
     expect(p.setEnabled).toHaveBeenCalledWith(false)
   })
 
-  it('退出 submits the host deactivation signal and closes the dock', () => {
+  it('Exit submits the host deactivation signal and closes the dock', () => {
     const p = props(true)
     render(<DebugModeDock {...p} />)
-    fireEvent.click(screen.getByRole('button', { name: '退出' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Exit' }))
     expect(p.setEnabled).toHaveBeenCalledWith(false)
-    expect(p.setDraft).toHaveBeenCalledWith('退出 Debug Mode')
+    expect(p.setDraft).toHaveBeenCalledWith('Exit Debug Mode')
     expect(p.submit).toHaveBeenCalledTimes(1)
   })
 })
